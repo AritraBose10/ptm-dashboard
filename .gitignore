@@ -1,0 +1,14 @@
+# Student data must never be committed
+*.xlsx
+*.xls
+*.csv
+ptm_records.json
+
+# Python / OS
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+
+# Streamlit secrets
+.streamlit/secrets.toml
