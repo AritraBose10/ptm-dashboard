@@ -93,4 +93,6 @@ The same app adapts to phones automatically (screens narrower than ~760px):
 3. In the app's **Settings → Sharing**, restrict viewing to specific email addresses (the app handles student data).
 4. Staff open the app, upload the **marks** and **attendance** workbooks from the sidebar, and work as usual.
 
-In hosted mode (no workbooks bundled) nothing about students is stored on the server: PTM notes live in the visitor's browser session. Use **Export PTM log (CSV)** in the sidebar before closing, and **Restore PTM log** next time.
+PTM records (status, remarks, faculty name, dates) are saved on the server in `ptm_records.json` and shared by all faculty, so only give access to faculty. Excel workbooks are never stored: they live only in the uploader for that session.
+
+**Important:** on free Streamlit Community Cloud the server's files are wiped when the app restarts or is redeployed. Use **Export PTM log (CSV)** in the sidebar regularly as a backup and **Restore PTM log** to reload it. For permanent storage, connect a database or Google Sheet (not set up yet).

@@ -27,10 +27,11 @@ RECORDS_PATH = os.path.join(APP_DIR, "ptm_records.json")
 DEFAULT_MARKS = os.path.join(APP_DIR, "PTM_BTECH_2025_DATA with attendance 13 Oct.xlsx")
 DEFAULT_ATT = os.path.join(APP_DIR, "SOF 2ND YEAR 3RD SEM CLASS WISE ATTENDANCE (1) (10).xlsx")
 LOGO_PATH = os.path.join(APP_DIR, "assets", "logo_header.png")
-# Local mode (workbooks sit next to the app): PTM records persist to a file.
-# Hosted mode (no bundled workbooks): records stay in the visitor's own session only,
-# so one user's student notes are never visible to another.
-PERSIST = os.path.exists(DEFAULT_MARKS)
+# HOSTED = no workbooks bundled with the app (faculty upload them each session).
+# PTM records are stored on the server (ptm_records.json) and shared by all faculty.
+# Set the environment variable PTM_PERSIST=0 to keep records in each browser session only.
+HOSTED = not os.path.exists(DEFAULT_MARKS)
+PERSIST = os.environ.get("PTM_PERSIST", "1") != "0"
 
 
 def _logo_b64():
@@ -284,6 +285,7 @@ TIPS = {
     "ptm_att_*": "Who from the family attended the meeting.",
     "ptm_date_*": "Date the meeting took place.",
     "ptm_fup_*": "Optional date to review this student's progress again.",
+    "ptm_by_*": "Your name, so the record shows which faculty met the parent.",
     "ptm_remarks_*": "Notes and agreed actions; included in the parent message and report.",
     "btn_save_ptm": "Save this meeting record to ptm_records.json.",
 }
@@ -689,29 +691,44 @@ def att_band(pct, thr):
 # ══════════════════════════════════════════════════════════════════════════════
 # PTM RECORD STORE (persisted to ptm_records.json next to the app)
 # ══════════════════════════════════════════════════════════════════════════════
+def _read_store():
+    try:
+        with open(RECORDS_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def load_records():
-    if 'ptm_records' not in st.session_state:
+    """Shared store: re-read the file on every run so faculty see each other's updates immediately."""
+    if PERSIST:
+        # anything that could not be written to disk stays available in this session
+        st.session_state.ptm_records = {**_read_store(), **st.session_state.get('_unsaved', {})}
+    elif 'ptm_records' not in st.session_state:
         st.session_state.ptm_records = {}
-        if PERSIST:
-            try:
-                with open(RECORDS_PATH, 'r', encoding='utf-8') as f:
-                    st.session_state.ptm_records = json.load(f)
-            except Exception:
-                pass
     return st.session_state.ptm_records
 
 
-def save_record(sid, rec):
-    recs = load_records()
-    rec['updated'] = datetime.now().strftime('%Y-%m-%d %H:%M')
-    recs[sid] = rec
+def save_record(sid, rec, stamp=True):
+    if stamp:
+        rec['updated'] = datetime.now().strftime('%Y-%m-%d %H:%M')
     if not PERSIST:
+        load_records()[sid] = rec
         return True
+    recs = _read_store()                       # merge into the latest file so other students' notes are never overwritten
+    recs[sid] = rec
     try:
-        with open(RECORDS_PATH, 'w', encoding='utf-8') as f:
+        tmp = RECORDS_PATH + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(recs, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, RECORDS_PATH)
+        st.session_state.get('_unsaved', {}).pop(sid, None)
+        st.session_state.ptm_records = recs
         return True
     except Exception:
+        st.session_state.setdefault('_unsaved', {})[sid] = rec
+        st.session_state.ptm_records = {**recs}
         return False
 
 
@@ -924,21 +941,25 @@ with st.sidebar:
                            file_name=f"PTM_Log_{datetime.now():%Y%m%d}.csv", mime="text/csv",
                            icon=":material/download:", width="stretch", key="exp_log")
     if PERSIST:
-        st.caption(f"Records saved to `{os.path.basename(RECORDS_PATH)}`")
+        st.caption("PTM records are saved on the server and shared with all faculty using this app.")
+        if HOSTED:
+            st.caption("Hosting note: free hosting can reset server files when the app restarts, "
+                       "so download the PTM log regularly as a backup.")
     else:
-        st.caption("Records are kept in this browser session only. Export the PTM log before closing the tab, "
-                   "and restore it next time below.")
-        u_log = st.file_uploader("Restore PTM log (CSV)", type=["csv"], key="u_log")
+        st.caption("Records are kept in this browser session only. Export the PTM log before closing the tab.")
+    if HOSTED:
+        u_log = st.file_uploader("Restore PTM log (CSV)", type=["csv"], key="u_log",
+                                 help="Re-load a previously exported PTM log.")
         if u_log is not None and st.session_state.get("_log_loaded") != u_log.file_id:
             try:
                 log = pd.read_csv(io.BytesIO(u_log.getvalue()), dtype=str).fillna("")
                 for _, lr in log.iterrows():
                     if lr.get("ID"):
-                        records[str(lr["ID"])] = {k: (lr.get(k) or None) for k in
-                                                  ("status", "attendee", "date", "follow_up", "remarks", "updated")}
-                        records[str(lr["ID"])]["status"] = records[str(lr["ID"])]["status"] or "Not met"
-                        records[str(lr["ID"])]["remarks"] = records[str(lr["ID"])]["remarks"] or ""
-                        records[str(lr["ID"])]["attendee"] = records[str(lr["ID"])]["attendee"] or "—"
+                        save_record(str(lr["ID"]), dict(
+                            status=lr.get("status") or "Not met", attendee=lr.get("attendee") or "—",
+                            date=lr.get("date") or None, follow_up=lr.get("follow_up") or None,
+                            remarks=lr.get("remarks") or "", faculty=lr.get("faculty") or "",
+                            updated=lr.get("updated") or None), stamp=False)
                 st.session_state["_log_loaded"] = u_log.file_id
                 st.rerun()
             except Exception as e:
@@ -1566,14 +1587,19 @@ def render_dossier(sub):
                                    key=f"ptm_remarks_{sid}",
                                    placeholder="e.g. Parent informed of attendance shortfall. Agreed on daily check-ins "
                                                "and weekend revision for Mathematics.")
+            faculty = st.text_input("Recorded by (faculty)", key=f"ptm_by_{sid}",
+                                    value=rec.get('faculty') or st.session_state.get('faculty_name', ''),
+                                    placeholder="Your name, so the record shows who met the parent")
             if st.form_submit_button("Save PTM record", type="primary", icon=":material/save:", key="btn_save_ptm"):
+                st.session_state['faculty_name'] = faculty.strip()
                 ok = save_record(sid, dict(status=status, attendee=attendee, date=mdate.isoformat(),
-                                           follow_up=fup.isoformat() if fup else None, remarks=remarks))
+                                           follow_up=fup.isoformat() if fup else None, remarks=remarks,
+                                           faculty=faculty.strip()))
                 st.toast("PTM record saved." if ok else "Saved for this session only (file not writable).",
                          icon=":material/check_circle:" if ok else ":material/warning:")
                 st.rerun()
         if rec.get('updated'):
-            st.caption(f"Last updated {rec['updated']}")
+            st.caption(f"Last updated {rec['updated']}" + (f" by {rec['faculty']}" if rec.get('faculty') else ""))
 
     with r2:
         msg = build_message(s, best, worst, rec.get('remarks', ''))
